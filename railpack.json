@@ -1,7 +1,11 @@
-{
+﻿{
   "$schema": "https://schema.railpack.com",
   "provider": "python",
   "deploy": {
-    "startCommand": "uvicorn ai_backend.main:app --host 0.0.0.0 --port $PORT"
+    "startCommand": "uvicorn ai_backend.main:app --host 0.0.0.0 --port $PORT",
+    "aptPackages": [
+      "...",
+      "libxcb1"
+    ]
   }
 }
