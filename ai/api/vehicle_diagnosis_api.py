@@ -33,6 +33,7 @@
 # ============================================================
 
 import io
+import gc
 import threading
 
 from pathlib import Path
@@ -284,6 +285,12 @@ DEVICE = torch.device(
     if torch.cuda.is_available()
     else "cpu"
 )
+
+# Keep CPU thread pools small on low-memory cloud instances.
+if DEVICE.type == "cpu":
+    torch.set_num_threads(1)
+    torch.set_num_interop_threads(1)
+
 
 
 print()
@@ -694,17 +701,11 @@ def load_tyre_model():
 # LOAD ALL MODELS
 # ============================================================
 
-vehicle_part_model = (
-    load_vehicle_part_model()
-)
+# Models are loaded only when needed to keep Render RAM usage low.
+vehicle_part_model = None
+damage_model = None
+tyre_model = None
 
-damage_model = (
-    load_damage_model()
-)
-
-tyre_model = (
-    load_tyre_model()
-)
 
 
 print()
@@ -734,6 +735,36 @@ print(
 )
 
 print("=" * 70)
+
+
+# ============================================================
+# MEMORY CLEANUP HELPERS
+# ============================================================
+
+def cleanup_memory():
+    """Release unused Python/PyTorch memory."""
+    gc.collect()
+
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
+def unload_vehicle_part_model():
+    global vehicle_part_model
+    vehicle_part_model = None
+    cleanup_memory()
+
+
+def unload_damage_model():
+    global damage_model
+    damage_model = None
+    cleanup_memory()
+
+
+def unload_tyre_model():
+    global tyre_model
+    tyre_model = None
+    cleanup_memory()
 
 
 # ============================================================
@@ -921,24 +952,25 @@ def detect_vehicle_parts(
     image: Image.Image
 ) -> List[Dict[str, Any]]:
 
-    if vehicle_part_model is None:
+    global vehicle_part_model
 
+    vehicle_part_model = load_vehicle_part_model()
+
+    if vehicle_part_model is None:
         return []
 
+    try:
+        results = vehicle_part_model(
+            image,
+            conf=PART_CONFIDENCE,
+            verbose=False,
+            device="cpu"
+        )
 
-    results = vehicle_part_model(
+        return extract_yolo_detections(results)
 
-        image,
-
-        conf=PART_CONFIDENCE,
-
-        verbose=False
-    )
-
-
-    return extract_yolo_detections(
-        results
-    )
+    finally:
+        unload_vehicle_part_model()
 
 
 # ============================================================
@@ -949,24 +981,25 @@ def detect_vehicle_damage(
     image: Image.Image
 ) -> List[Dict[str, Any]]:
 
-    if damage_model is None:
+    global damage_model
 
+    damage_model = load_damage_model()
+
+    if damage_model is None:
         return []
 
+    try:
+        results = damage_model(
+            image,
+            conf=DAMAGE_CONFIDENCE,
+            verbose=False,
+            device="cpu"
+        )
 
-    results = damage_model(
+        return extract_yolo_detections(results)
 
-        image,
-
-        conf=DAMAGE_CONFIDENCE,
-
-        verbose=False
-    )
-
-
-    return extract_yolo_detections(
-        results
-    )
+    finally:
+        unload_damage_model()
 
 
 # ============================================================
@@ -1081,164 +1114,91 @@ def crop_tyre_region(
 # ============================================================
 
 def predict_tyre_condition(
-
     image: Image.Image
-
 ) -> Dict[str, Any]:
 
+    global tyre_model
+
+    tyre_model = load_tyre_model()
+
     if tyre_model is None:
-
         raise RuntimeError(
-
-            "Tyre condition model "
-            "is not available."
+            "Tyre condition model is not available."
         )
 
+    image_tensor = None
 
-    image = image.convert(
-        "RGB"
-    )
+    try:
+        image = image.convert("RGB")
 
+        image_tensor = tyre_transform(image)
 
-    image_tensor = tyre_transform(
-        image
-    )
-
-
-    image_tensor = (
-
-        image_tensor
-
-        .unsqueeze(0)
-
-        .to(DEVICE)
-    )
-
-
-    with torch.inference_mode():
-
-        outputs = tyre_model(
+        image_tensor = (
             image_tensor
+            .unsqueeze(0)
+            .to(DEVICE)
         )
 
+        with torch.inference_mode():
 
-        probabilities = (
+            outputs = tyre_model(image_tensor)
 
-            torch.softmax(
-
+            probabilities = torch.softmax(
                 outputs,
-
                 dim=1
-
             )[0]
-        )
 
-
-    confidence, predicted_index = (
-
-        torch.max(
-
-            probabilities,
-
-            dim=0
-        )
-    )
-
-
-    predicted_index = int(
-        predicted_index.item()
-    )
-
-    confidence = float(
-        confidence.item()
-    )
-
-
-    condition = TYRE_CLASSES[
-        predicted_index
-    ]
-
-
-    # --------------------------------------------------------
-    # TOP 3 PREDICTIONS
-    # --------------------------------------------------------
-
-    top_values, top_indices = (
-
-        torch.topk(
-
-            probabilities,
-
-            k=min(
-                3,
-                len(TYRE_CLASSES)
+            confidence, predicted_index = torch.max(
+                probabilities,
+                dim=0
             )
-        )
-    )
 
+            predicted_index = int(predicted_index.item())
+            confidence = float(confidence.item())
 
-    top_predictions = []
+            condition = TYRE_CLASSES[predicted_index]
 
-
-    for value, index in zip(
-
-        top_values,
-
-        top_indices
-    ):
-
-        probability = float(
-            value.item()
-        )
-
-
-        class_name = TYRE_CLASSES[
-
-            int(
-                index.item()
+            top_values, top_indices = torch.topk(
+                probabilities,
+                k=min(3, len(TYRE_CLASSES))
             )
-        ]
 
+            top_predictions = []
 
-        top_predictions.append({
+            for value, index in zip(
+                top_values,
+                top_indices
+            ):
+                probability = float(value.item())
 
-            "class":
-                class_name,
+                class_name = TYRE_CLASSES[
+                    int(index.item())
+                ]
 
-            "confidence":
-                round(
-                    probability,
-                    6
-                ),
+                top_predictions.append({
+                    "class": class_name,
+                    "confidence": round(probability, 6),
+                    "confidence_percent": round(
+                        probability * 100,
+                        2
+                    )
+                })
 
-            "confidence_percent":
-                round(
-                    probability * 100,
-                    2
-                )
-        })
-
-
-    return {
-
-        "condition":
-            condition,
-
-        "confidence":
-            round(
-                confidence,
-                6
-            ),
-
-        "confidence_percent":
-            round(
+        return {
+            "condition": condition,
+            "confidence": round(confidence, 6),
+            "confidence_percent": round(
                 confidence * 100,
                 2
             ),
+            "top_predictions": top_predictions
+        }
 
-        "top_predictions":
-            top_predictions
-    }
+    finally:
+        if image_tensor is not None:
+            del image_tensor
+
+        unload_tyre_model()
 
 
 # ============================================================
@@ -2337,6 +2297,17 @@ async def predict_vehicle(
                 "RGB"
             )
 
+            # Limit phone-camera images to reduce peak inference RAM.
+            MAX_IMAGE_SIZE = 1280
+
+            image.thumbnail(
+                (
+                    MAX_IMAGE_SIZE,
+                    MAX_IMAGE_SIZE
+                ),
+                Image.Resampling.LANCZOS
+            )
+
 
         except Exception as error:
 
@@ -2565,51 +2536,39 @@ async def predict_vehicle_legacy(
 @router.get(
     "/vehicle-ai/health"
 )
-
 def vehicle_ai_health():
 
     return {
-
         "service":
-
             "RideGuardian Unified Vehicle AI",
 
-
         "status":
-
             "online",
 
-
         "device":
+            str(DEVICE),
 
-            str(
-                DEVICE
-            ),
-
+        "model_loading":
+            "lazy_on_demand",
 
         "models": {
-
             "vehicle_parts_yolo":
-
-                vehicle_part_model
-                is not None,
-
+                "available_on_demand"
+                if VEHICLE_PART_MODEL_PATH.exists()
+                else False,
 
             "damage_yolo":
-
-                damage_model
-                is not None,
-
+                "available_on_demand"
+                if DAMAGE_MODEL_PATH.exists()
+                else False,
 
             "tyre_condition_efficientnet":
-
-                tyre_model
-                is not None
+                "available_on_demand"
+                if TYRE_MODEL_PATH.exists()
+                else False
         },
 
-
         "tyre_classes":
-
             TYRE_CLASSES,
 
         "inspection_types": [
@@ -2618,3 +2577,4 @@ def vehicle_ai_health():
             "tyre"
         ]
     }
+
