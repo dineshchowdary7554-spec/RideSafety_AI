@@ -58,6 +58,10 @@ from ai.api.route_api import (
     router as route_router
 )
 
+from ai.api.ride_prediction_api import (
+    router as ride_prediction_router
+)
+
 from ai.fl.storage import (
     initialize_fl_database
 )
@@ -92,6 +96,12 @@ app.include_router(
 
 app.include_router(
 
+    ride_prediction_router
+
+)
+
+app.include_router(
+
     fl_router
 
 )
@@ -120,6 +130,12 @@ def home():
             "Vehicle Damage Detection",
 
             "Tyre Condition Analysis",
+
+            "Live Ride Risk Prediction",
+
+            "Vehicle Wear and Stress Prediction",
+
+            "Thermal / Temperature Estimation",
 
             "Route Map Matching",
 
