@@ -21,7 +21,6 @@ PROJECT_ROOT = (
 )
 
 if str(PROJECT_ROOT) not in sys.path:
-
     sys.path.insert(
         0,
         str(PROJECT_ROOT)
@@ -38,7 +37,8 @@ app = FastAPI(
     "RideGuardian AI Backend",
 
     description=
-    "Vehicle AI, Tyre Analysis and Federated Learning Backend",
+    "Vehicle AI, Tyre Analysis, Route Map Matching "
+    "and Federated Learning Backend",
 
     version=
     "2.0.0"
@@ -54,6 +54,25 @@ from ai.api.vehicle_diagnosis_api import (
     router as vehicle_router
 )
 
+from ai.api.route_api import (
+    router as route_router
+)
+
+from ai.fl.storage import (
+    initialize_fl_database
+)
+
+from ai.fl.routes import (
+    router as fl_router
+)
+
+
+# ============================================================
+# INITIALIZE FEDERATED LEARNING DATABASE
+# ============================================================
+
+initialize_fl_database()
+
 
 # ============================================================
 # REGISTER ROUTERS
@@ -62,6 +81,18 @@ from ai.api.vehicle_diagnosis_api import (
 app.include_router(
 
     vehicle_router
+
+)
+
+app.include_router(
+
+    route_router
+
+)
+
+app.include_router(
+
+    fl_router
 
 )
 
@@ -88,7 +119,11 @@ def home():
 
             "Vehicle Damage Detection",
 
-            "Tyre Condition Analysis"
+            "Tyre Condition Analysis",
+
+            "Route Map Matching",
+
+            "Federated Learning"
 
         ]
 
